@@ -1,3 +1,5 @@
+      this.loadExtension(LuminousFlowGeneratorTool);
+
 // --- Sub-Module 7: LuminousFlowGeneratorTool ---
 // Generates abstract, glowing, fluid art patterns on Drawaria canvas, rendering locally and globally.
 class LuminousFlowGeneratorTool extends QBit {
