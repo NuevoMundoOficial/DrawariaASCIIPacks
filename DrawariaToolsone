@@ -1,0 +1,783 @@
+// --- Sub-Module 7: LuminousFlowGeneratorTool ---
+// Generates abstract, glowing, fluid art patterns on Drawaria canvas, rendering locally and globally.
+class LuminousFlowGeneratorTool extends QBit {
+    _isGenerating = false;
+    _generationIntervalId = null;
+    _currentX = 50; // Posición inicial X (centro del canvas en porcentaje)
+    _currentY = 50; // Posición inicial Y (centro del canvas en porcentaje)
+    _currentAngle = Math.random() * 2 * Math.PI; // Ángulo de dirección actual en radianes
+    _currentHue = 0; // Tono HSL actual para el color
+    _linesInCurrentStroke = 0;
+
+    // Referencias al canvas principal del juego
+    _gameCanvas = null;
+    _gameCtx = null;
+
+    // Elementos de la interfaz de usuario
+    _ui = {
+        numStrokesInput: null,
+        linesPerStrokeInput: null,
+        segmentLengthInput: null,
+        angleRandomnessInput: null,
+        minThicknessInput: null,
+        maxThicknessInput: null,
+        startHueInput: null,
+        endHueInput: null,
+        alphaInput: null,
+        drawDelayInput: null,
+        colorPreview: null,
+        startButton: null,
+        stopButton: null,
+        statusLabel: null
+    };
+
+    // Valores por defecto (ajustables)
+    _defaults = {
+        numStrokes: 5,
+        linesPerStroke: 100,
+        segmentLength: 0.5, // % del canvas (Game coords 0-100)
+        angleRandomness: 10, // grados
+        minThickness: 5,
+        maxThickness: 25,
+        startHue: 0,   // Rojo
+        endHue: 360,   // Rojo (ciclo completo)
+        alpha: 0.8,    // Transparencia (AUMENTADO)
+        drawDelay: 5   // ms por línea
+    };
+
+    constructor() {
+        super("Luminous Flow Generator", '<i class="fas fa-lightbulb"></i>'); // Unique name and icon
+        this._onStartup();
+    }
+
+    _onStartup() {
+        this._findGameCanvas(); // Localizar el canvas principal y su contexto
+        this._loadInterface();
+        this._setInitialValues();
+        this._updateColorPreview();
+        this._setupEventListeners();
+        setInterval(() => this._updateButtonsState(), 1000); // Check connection status regularly
+        this.notify("info", "Módulo 'Luminous Flow Generator' cargado. ¡Prepara tu lienzo!");
+    }
+
+    _findGameCanvas() {
+        this._gameCanvas = document.getElementById('canvas');
+        if (this._gameCanvas) {
+            this._gameCtx = this._gameCanvas.getContext('2d');
+        } else {
+            this.notify("warning", "Canvas del juego no encontrado. Las funciones de dibujo no estarán disponibles.");
+        }
+    }
+
+    // Helper unificado para enviar comando de dibujo y renderizar localmente
+    // x1_game, y1_game, x2_game, y2_game son en coordenadas de juego (0-100)
+    _sendAndRenderDrawCommand(x1_game, y1_game, x2_game, y2_game, thickness, color) {
+        // CORRECTED: Call getGameSocket as a global function, not a method of 'this'
+        const gameSocket = getGameSocket();
+        if (!gameSocket) {
+            this.notify("warning", "No hay conexión WebSocket activa. No se pueden enviar comandos de dibujo.");
+            this._stopGeneration(); // Stop if connection is lost
+            return false;
+        }
+
+        // Convertir coordenadas de juego (0-100) a normalizadas (0-1) para el servidor
+        const x1_norm = x1_game / 100;
+        const y1_norm = y1_game / 100;
+        const x2_norm = x2_game / 100;
+        const y2_norm = y2_game / 100;
+
+        // Enviar comando al servidor
+        const payload = `42["drawcmd",0,[${x1_norm.toFixed(4)},${y1_norm.toFixed(4)},${x2_norm.toFixed(4)},${y2_norm.toFixed(4)},false,${0 - thickness},"${color}",0,0,{}]]`;
+        gameSocket.send(payload);
+
+        // Renderizado local en el canvas del juego
+        if (this._gameCtx && this._gameCanvas) {
+            const x1_px = x1_norm * this._gameCanvas.width;
+            const y1_px = y1_norm * this._gameCanvas.height;
+            const x2_px = x2_norm * this._gameCanvas.width;
+            const y2_px = y2_norm * this._gameCanvas.height;
+
+            this._gameCtx.strokeStyle = color;
+            this._gameCtx.lineWidth = thickness;
+            this._gameCtx.lineCap = 'round';
+            this._gameCtx.lineJoin = 'round';
+            this._gameCtx.beginPath();
+            this._gameCtx.moveTo(x1_px, y1_px);
+            this._gameCtx.lineTo(x2_px, y2_px);
+            this._gameCtx.stroke();
+        }
+        return true;
+    }
+
+
+    _loadInterface() {
+        const container = domMake.Tree("div", { class: "luminous-section" });
+        this.htmlElements.section.appendChild(container);
+
+        container.appendChild(domMake.Tree("div", { class: "luminous-section-title" }, ["Generador de Arte Luminoso"]));
+
+        const controlsGroup = domMake.Tree("div", { class: "luminous-controls-group" });
+
+        const addControlInput = (label, propName, type, min, max, step, placeholder = "") => {
+            const wrapper = domMake.Tree("div");
+            wrapper.appendChild(domMake.Tree("label", {}, [label]));
+            const input = domMake.Tree("input", { type, min, max, step, placeholder, value: this._defaults[propName] });
+            this._ui[propName + "Input"] = input; // Guardar referencia al elemento UI
+            wrapper.appendChild(input);
+            controlsGroup.appendChild(wrapper);
+        };
+
+        addControlInput("Número de Flujos:", "numStrokes", "number", 1, 50, 1);
+        addControlInput("Líneas por Flujo:", "linesPerStroke", "number", 10, 500, 10);
+        addControlInput("Longitud Segmento (%):", "segmentLength", "number", 0.1, 10, 0.1); // AUMENTADO max: 10
+        addControlInput("Aleatoriedad Ángulo (º):", "angleRandomness", "number", 0, 90, 1);
+        addControlInput("Grosor Mínimo:", "minThickness", "number", 1, 50, 1);
+        addControlInput("Grosor Máximo:", "maxThickness", "number", 5, 100, 1);
+        addControlInput("Tono Inicial (HSL):", "startHue", "number", 0, 359, 1);
+        addControlInput("Tono Final (HSL):", "endHue", "number", 0, 359, 1);
+        addControlInput("Opacidad (0-1):", "alpha", "number", 0.1, 1.0, 0.05);
+        addControlInput("Retraso Dibujo (ms):", "drawDelay", "number", 1, 1000, 5);
+
+        container.appendChild(controlsGroup);
+
+        this._ui.colorPreview = domMake.Tree("div", { class: "luminous-color-preview" });
+        container.appendChild(domMake.Tree("label", {}, ["Previsualización de Degradado:"]));
+        container.appendChild(this._ui.colorPreview);
+
+        const buttonRow = domMake.Row({ class: "luminous-button-row" });
+        this._ui.startButton = domMake.Button('<i class="fas fa-play-circle"></i> Iniciar Generación');
+        this._ui.startButton.addEventListener('click', () => this._startGeneration());
+        this._ui.stopButton = domMake.Button('<i class="fas fa-stop-circle"></i> Detener Generación');
+        this._ui.stopButton.disabled = true;
+        this._ui.stopButton.addEventListener('click', () => this._stopGeneration());
+        const clearCanvasButton = domMake.Button('<i class="fas fa-eraser"></i> Limpiar Lienzo');
+        clearCanvasButton.addEventListener('click', () => this._clearCanvas());
+
+        buttonRow.appendAll(this._ui.startButton, this._ui.stopButton, clearCanvasButton);
+        container.appendChild(buttonRow);
+
+        this._ui.statusLabel = domMake.Tree("div", { class: "luminous-status" }, ["Estado: Listo."]);
+        container.appendChild(this._ui.statusLabel);
+    }
+
+    _setInitialValues() {
+        for (const prop in this._defaults) {
+            // Corrected: Use this._ui directly to set values, as elements are stored there
+            const inputElement = this._ui[prop + "Input"];
+            if (inputElement) {
+                inputElement.value = this._defaults[prop];
+            }
+        }
+    }
+
+    _setupEventListeners() {
+        // Event listeners para actualizar la previsualización del color
+        const colorInputs = ['startHueInput', 'endHueInput', 'alphaInput'];
+        colorInputs.forEach(prop => {
+            const inputElement = this._ui[prop];
+            if (inputElement) { // Ensure element exists before adding listener
+                inputElement.addEventListener('input', () => this._updateColorPreview());
+            }
+        });
+    }
+
+    _updateColorPreview() {
+        if (!this._ui.colorPreview || !this._ui.startHueInput || !this._ui.endHueInput || !this._ui.alphaInput) return;
+
+        const startHue = parseInt(this._ui.startHueInput.value);
+        const endHue = parseInt(this._ui.endHueInput.value);
+        const alpha = parseFloat(this._ui.alphaInput.value);
+
+        const gradient = `linear-gradient(to right, hsla(${startHue}, 100%, 50%, ${alpha}) 0%, hsla(${(startHue + (endHue - startHue) / 2) % 360}, 100%, 50%, ${alpha}) 50%, hsla(${endHue}, 100%, 50%, ${alpha}) 100%)`;
+        this._ui.colorPreview.style.background = gradient;
+    }
+
+    _updateButtonsState() {
+        // CORRECTED: Call getGameSocket as a global function
+        const isConnected = getGameSocket() !== null;
+        this._ui.startButton.disabled = !isConnected || this._isGenerating;
+        this._ui.stopButton.disabled = !this._isGenerating;
+        this._ui.statusLabel.textContent = isConnected ? (this._isGenerating ? "Estado: Generando arte..." : "Estado: Listo.") : "Estado: Desconectado del juego.";
+    }
+
+    async _clearCanvas() {
+        const gameSocket = getGameSocket();
+        if (!gameSocket) {
+            this.notify("warning", "No hay conexión WebSocket activa para limpiar el lienzo.");
+            return;
+        }
+
+        this.notify("info", "Enviando comandos para borrar el lienzo...");
+        if (this._gameCtx && this._gameCanvas) {
+            this._gameCtx.clearRect(0, 0, this._gameCanvas.width, this._gameCanvas.height);
+        }
+
+        const clearThickness = 1000;
+        const clearColor = '#ffffff'; // White color to clear
+        const steps = 5;
+
+        for (let i = 0; i <= steps; i++) {
+            const yCoord = (i / steps) * 100;
+            this._sendAndRenderDrawCommand(0, yCoord, 100, yCoord, clearThickness, clearColor);
+            await new Promise(resolve => setTimeout(resolve, 5));
+        }
+        for (let i = 0; i <= steps; i++) {
+            const xCoord = (i / steps) * 100;
+            this._sendAndRenderDrawCommand(xCoord, 0, xCoord, 100, clearThickness, clearColor);
+            await new Promise(resolve => setTimeout(resolve, 5));
+        }
+        this.notify("success", "Lienzo limpiado.");
+    }
+
+
+    _startGeneration() {
+        const gameSocket = getGameSocket();
+        if (!gameSocket) {
+            this.notify("error", "No se puede iniciar la generación sin una conexión de juego activa.");
+            return;
+        }
+
+        this._isGenerating = true;
+        this._updateButtonsState(); // Update button states immediately
+
+        this._currentX = Math.random() * 100;
+        this._currentY = Math.random() * 100;
+        this._currentAngle = Math.random() * 2 * Math.PI;
+        this._currentHue = parseInt(this._ui.startHueInput.value);
+        this._linesInCurrentStroke = 0;
+
+        this.notify("info", "Iniciando generación de arte luminoso...");
+
+        this._clearCanvas().then(() => {
+            this._generationIntervalId = setInterval(() => this._generateNextStep(), parseInt(this._ui.drawDelayInput.value));
+        });
+    }
+
+    _stopGeneration() {
+        this._isGenerating = false;
+        if (this._generationIntervalId) {
+            clearInterval(this._generationIntervalId);
+            this._generationIntervalId = null;
+        }
+        this._updateButtonsState(); // Update button states immediately
+        this.notify("info", "Generación de arte luminoso detenida.");
+    }
+
+    _generateNextStep() {
+        // CORRECTED: Call getGameSocket as a global function
+        if (!this._isGenerating || !getGameSocket()) {
+            this._stopGeneration();
+            return;
+        }
+
+        const numStrokes = parseInt(this._ui.numStrokesInput.value);
+        const linesPerStroke = parseInt(this._ui.linesPerStrokeInput.value);
+        const segmentLength = parseFloat(this._ui.segmentLengthInput.value);
+        const angleRandomness = parseFloat(this._ui.angleRandomnessInput.value) * (Math.PI / 180);
+        const minThickness = parseInt(this._ui.minThicknessInput.value);
+        const maxThickness = parseInt(this._ui.maxThicknessInput.value);
+        const startHue = parseInt(this._ui.startHueInput.value);
+        const endHue = parseInt(this._ui.endHueInput.value);
+        const alpha = parseFloat(this._ui.alphaInput.value);
+
+        // Si se han dibujado suficientes líneas para el flujo actual o si es la primera línea
+        if (this._linesInCurrentStroke >= linesPerStroke) {
+            this._currentX = Math.random() * 100;
+            this._currentY = Math.random() * 100;
+            this._currentAngle = Math.random() * 2 * Math.PI;
+            this._linesInCurrentStroke = 0; // Reiniciar contador de líneas para el nuevo flujo
+        }
+
+        this._currentAngle += (Math.random() - 0.5) * 2 * angleRandomness; // Aplicar aleatoriedad al ángulo
+        const newX = this._currentX + segmentLength * Math.cos(this._currentAngle);
+        const newY = this._currentY + segmentLength * Math.sin(this._currentAngle);
+
+        // Clamp coordinates to stay within 0-100 range
+        const clampedX1 = Math.max(0, Math.min(100, this._currentX));
+        const clampedY1 = Math.max(0, Math.min(100, this._currentY));
+        const clampedX2 = Math.max(0, Math.min(100, newX));
+        const clampedY2 = Math.max(0, Math.min(100, newY));
+
+        // Reflejar el ángulo si la línea golpea un borde
+        if (newX <= 0 || newX >= 100) {
+            this._currentAngle = Math.PI - this._currentAngle; // Reflejar horizontalmente
+            this._currentX = clampedX2; // Ajustar posición para que no se salga
+        }
+        if (newY <= 0 || newY >= 100) {
+            this._currentAngle = -this._currentAngle; // Reflejar verticalmente
+            this._currentY = clampedY2; // Ajustar posición para que no se salga
+        }
+
+        // Interpolación de color basado en el progreso dentro del flujo
+        let hueStep = 0;
+        if (linesPerStroke > 0) { // Evitar división por cero
+            hueStep = (endHue - startHue) / linesPerStroke;
+        }
+        this._currentHue = (this._currentHue + hueStep + 360) % 360;
+
+        const color = `hsla(${this._currentHue}, 100%, 50%, ${alpha})`;
+        const thickness = Math.random() * (maxThickness - minThickness) + minThickness;
+
+        this._sendAndRenderDrawCommand(clampedX1, clampedY1, clampedX2, clampedY2, thickness, color);
+
+        this._currentX = clampedX2;
+        this._currentY = clampedY2;
+        this._linesInCurrentStroke++;
+
+        // Condición para detener la generación si se han dibujado todos los flujos
+        if (this._linesInCurrentStroke >= linesPerStroke * numStrokes) {
+            this._stopGeneration();
+            this.notify("success", "Generación de arte completada.");
+        }
+    }
+}
+
+// --- Sub-Module 8: ElementalAnimationsTool ---
+// Provides high-quality elemental animations (Ocean, Magma, Poison, PurpleGoo)
+class ElementalAnimationsTool extends QBit {
+    _drawingActive = false;
+    _canvas = null;
+    _ctx = null;
+
+    _ui = {}; // UI elements references for settings
+    _animationConfig = {}; // Stores current animation configuration
+
+    constructor() {
+        super("Elemental Animations", '<i class="fas fa-cloud"></i>'); // Unique name and icon
+        this._onStartup();
+    }
+
+    _onStartup() {
+        this._canvas = document.getElementById('canvas');
+        if (this._canvas) {
+            this._ctx = this._canvas.getContext('2d');
+        } else {
+            this.notify("error", "Canvas del juego no encontrado para Elemental Animations.");
+            return;
+        }
+
+        this._loadInterface();
+        this._setInitialValues(); // Call to set initial slider values
+        this._setupEventListeners();
+        // Periodically check and update connection status and button states
+        setInterval(() => this._updateButtonsState(), 1000);
+        this.notify("info", "Módulo 'Elemental Animations' cargado.");
+    }
+
+    _loadInterface() {
+        const container = domMake.Tree("div", { class: "elemental-section" });
+        this.htmlElements.section.appendChild(container);
+
+        container.appendChild(domMake.Tree("h4", {}, ["Animaciones"]));
+        const animationsGrid = domMake.Tree("div", { class: "elemental-button-grid" });
+        const animationsList = [
+            { id: "effect-ocean", label: "Ocean", icon: 'bxs-droplet', type: 'Ocean' },
+            { id: "effect-magma", label: "Magma", icon: 'bxs-volcano', type: 'Magma' },
+            { id: "effect-poison", label: "Poison", icon: 'bxs-skull', type: 'Poison' },
+            { id: "effect-purplegoo", label: "Purple Goo", icon: 'bxs-vial', type: 'PurpleGoo' }
+        ];
+
+        animationsList.forEach(anim => {
+            const button = domMake.Button(`<i class='bx ${anim.icon}'></i> ${anim.label}`, { class: `elemental-button ${anim.type.toLowerCase()}` });
+            button.addEventListener('click', () => this._animateElementalWave(anim.type));
+            animationsGrid.appendChild(button);
+            this._ui[anim.id] = button; // Store UI reference
+        });
+        container.appendChild(animationsGrid);
+
+        container.appendChild(domMake.Tree("h4", {}, ["Settings"]));
+        const settingsDiv = domMake.Tree("div", {});
+
+        const addSetting = (label, id, min, max, value, step, unit = '', isCheckbox = false) => {
+            const item = domMake.Tree("div", { class: "elemental-setting-item" });
+            let input;
+            if (isCheckbox) {
+                input = domMake.Tree("input", { type: "checkbox", id: `${this.identifier}-${id}`, checked: value });
+                item.appendAll(domMake.Tree("label", { for: `${this.identifier}-${id}`, class: "checkbox-label" }, [label]), input);
+            } else {
+                input = domMake.Tree("input", { type: "range", id: `${this.identifier}-${id}`, min, max, value, step });
+                const valueSpan = domMake.Tree("span", { id: `${this.identifier}-${id}Value`, class: "value-display" }, [`${value}${unit}`]);
+                input.addEventListener('input', () => { // Corrected listener setup
+                    valueSpan.textContent = `${input.value}${unit}`;
+                    // Special handling for fill density display (divide by 1000)
+                    if (id === "animationFillDensityInput") {
+                        valueSpan.textContent = `${(parseFloat(input.value) / 1000).toFixed(3)}`;
+                    }
+                });
+                item.appendAll(domMake.Tree("label", { for: `${this.identifier}-${id}` }, [label]), input, valueSpan);
+            }
+            settingsDiv.appendChild(item);
+            this._ui[id] = input; // Store UI reference
+        };
+
+        addSetting("Speed (ms/frame):", "animationSpeedInput", "50", "500", "150", "10");
+        addSetting("Wave Detail (Segments):", "animationSegmentsInput", "10", "50", "30", "1");
+        addSetting("Particle Density (%):", "animationParticleChanceInput", "0", "100", "15", "1", "%");
+        addSetting("Base Fill Density:", "animationFillDensityInput", "5", "100", "8", "1", ""); // Default fill density 0.008 (WAS 20, which was 0.02)
+        addSetting("Randomize Frame Delay:", "animationRandomDelayToggle", null, null, false, null, null, true); // Checkbox
+
+        settingsDiv.appendChild(domMake.Tree("p", { style: "font-size:0.85em;color:var(--warning);margin-top:10px;" }, ""));
+        container.appendChild(settingsDiv);
+
+        const stopButton = domMake.Button('<i class="fas fa-stop-circle"></i> Detener Animación', { class: "elemental-button danger" });
+        stopButton.style.width = "100%";
+        stopButton.addEventListener('click', () => this._stopDrawing());
+        container.appendChild(stopButton);
+    }
+
+    _setInitialValues() { // Method to correctly set initial slider values on UI
+        // This ensures the value displays match the initial range values
+        this._ui.animationSpeedInput.value = 150;
+        this._ui.animationSegmentsInput.value = 30;
+        this._ui.animationParticleChanceInput.value = 15;
+        this._ui.animationFillDensityInput.value = 8; // Default value from _defaults
+        this._ui.animationRandomDelayToggle.checked = false;
+
+        // Manually trigger input events to update value spans
+        // This is crucial for numerical display on load
+        this._ui.animationSpeedInput.dispatchEvent(new Event('input'));
+        this._ui.animationSegmentsInput.dispatchEvent(new Event('input'));
+        this._ui.animationParticleChanceInput.dispatchEvent(new Event('input'));
+        this._ui.animationFillDensityInput.dispatchEvent(new Event('input'));
+    }
+
+    _setupEventListeners() {
+        // Event listeners are set up in _loadInterface's addSetting during element creation.
+        // No additional listeners are needed here as they are correctly linked.
+    }
+
+    _updateButtonsState() {
+        const isConnected = getGameSocket() !== null;
+        // Enable/disable all setting inputs
+        const settingInputs = [
+            this._ui.animationSpeedInput, this._ui.animationSegmentsInput,
+            this._ui.animationParticleChanceInput, this._ui.animationFillDensityInput,
+            this._ui.animationRandomDelayToggle
+        ];
+        settingInputs.forEach(input => {
+            if (input) input.disabled = !isConnected || this._drawingActive;
+        });
+
+        // Enable/disable animation trigger buttons
+        const animationButtons = [
+            this._ui['effect-ocean'], this._ui['effect-magma'],
+            this._ui['effect-poison'], this._ui['effect-purplegoo']
+        ];
+        animationButtons.forEach(button => {
+            if (button) button.disabled = !isConnected || this._drawingActive;
+        });
+
+        // Enable/disable the global stop button
+        const stopButton = document.querySelector(`#${this.identifier} .elemental-button.danger`);
+        if (stopButton) {
+            stopButton.disabled = !this._drawingActive;
+        }
+    }
+
+    _delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+    _getRandomInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+    _getRandomFloat(min, max) { return Math.random() * (max - min) + min; }
+
+    // Unified function to send draw commands AND render locally
+    // start_norm and end_norm are in normalized 0-1 coordinates
+    _sendAndRenderDrawCmd(start_norm, end_norm, color, thickness, isEraser = false, algo = 0) {
+        const gameSocket = getGameSocket(); // Using the global getGameSocket from DrawariaTools
+        if (!gameSocket) {
+            this.notify("warning", "WebSocket no conectado. No se puede enviar ni renderizar el comando de dibujo.");
+            this._stopDrawing(); // Stop drawing if socket is lost
+            return false;
+        }
+
+        const p1x_norm = Math.max(0, Math.min(1, start_norm[0]));
+        const p1y_norm = Math.max(0, Math.min(1, start_norm[1]));
+        const p2x_norm = Math.max(0, Math.min(1, end_norm[0]));
+        const p2y_norm = Math.max(0, Math.min(1, end_norm[1]));
+        let numThickness = parseFloat(thickness);
+        if (isNaN(numThickness)) {
+            numThickness = 10;
+        }
+
+        // Local rendering on the game canvas
+        if (this._ctx && this._canvas) {
+            const p1x_px = p1x_norm * this._canvas.width;
+            const p1y_px = p1y_norm * this._canvas.height;
+            const p2x_px = p2x_norm * this._canvas.width;
+            const p2y_px = p2y_norm * this._canvas.height;
+
+            this._ctx.strokeStyle = color;
+            this._ctx.lineWidth = numThickness;
+            this._ctx.lineCap = 'round';
+            this._ctx.lineJoin = 'round';
+            if (isEraser) {
+                this._ctx.globalCompositeOperation = 'destination-out'; // Apply eraser blend mode
+            }
+            this._ctx.beginPath();
+            this._ctx.moveTo(p1x_px, p1y_px);
+            this._ctx.lineTo(p2x_px, p2y_px);
+            this._ctx.stroke();
+            if (isEraser) {
+                this._ctx.globalCompositeOperation = 'source-over'; // Reset blend mode
+            }
+        }
+
+        const gT = isEraser ? numThickness : 0 - numThickness;
+        gameSocket.send(`42["drawcmd",0,[${p1x_norm},${p1y_norm},${p2x_norm},${p2y_norm},${isEraser},${gT},"${color}",0,0,{"2":${algo},"3":0.5,"4":0.5}]]`);
+        return true;
+    }
+
+    _stopDrawing() {
+        this._drawingActive = false;
+        this.notify("info", "Animación detenida.");
+        this._updateButtonsState(); // Update UI after stopping
+    }
+
+    // Clear Canvas implementation
+    async _clearCanvas() {
+        const gameSocket = getGameSocket();
+        if (!gameSocket) {
+            this.notify("warning", "No hay conexión WebSocket activa para limpiar el lienzo.");
+            return;
+        }
+
+        this.notify("info", "Enviando comandos para borrar el lienzo...");
+        // Local clear before sending commands to avoid lingering old drawing
+        if (this._ctx && this._canvas) {
+            this._ctx.clearRect(0, 0, this._canvas.width, this._canvas.height);
+        }
+
+        const clearThickness = 1000;
+        const clearColor = '#ffffff'; // White color to clear
+        const steps = 5;
+
+        for (let i = 0; i <= steps; i++) {
+            const yCoord = (i / steps) * 100;
+            // Pass isEraser = true for clearing lines
+            this._sendAndRenderDrawCmd([0, yCoord], [100, yCoord], clearColor, clearThickness, true);
+            await new Promise(resolve => setTimeout(resolve, 5));
+        }
+        for (let i = 0; i <= steps; i++) {
+            const xCoord = (i / steps) * 100;
+            // Pass isEraser = true for clearing lines
+            this._sendAndRenderDrawCmd([xCoord, 0], [xCoord, 100], clearColor, clearThickness, true);
+            await new Promise(resolve => setTimeout(resolve, 5));
+        }
+        this.notify("success", "Lienzo limpiado.");
+    }
+
+    async _animateElementalWave(type) {
+        if (!this._canvas || !this._ctx) {
+            this.notify("error", "Canvas not ready. Please ensure you are in a Drawaria room.");
+            return;
+        }
+        const gameSocket = getGameSocket();
+        if (!gameSocket) {
+            this.notify("error", "Not connected to Drawaria room. Please join a room first.");
+            return;
+        }
+        if (this._drawingActive) {
+            this.notify("warning", "Animation already in progress. Please wait or stop the current animation.");
+            return;
+        }
+
+        this._drawingActive = true;
+        this._updateButtonsState(); // Update UI to disable other buttons
+        this.notify("info", `Starting ${type} Animation...`);
+
+        let config;
+        // Using 0-1 normalized coordinates for all calculations
+        switch (type) {
+            case 'Ocean':
+                config = {
+                    baseFillColor: '#00008B',
+                    waveColors: ['#1E90FF', '#4682B4'],
+                    outlineColor: '#AFEEEE',
+                    particleColor: '#00FFFF',
+                    particleType: 'blob',
+                    particleChance: 0.15,
+                    particleSizeMin: 0.01,
+                    particleSizeMax: 0.03,
+                    particleThickness: 8,
+                    startHeight: 0.88, // Normalized Y
+                    waveAmplitude: 0.06,
+                    waveFrequency: 2.5,
+                    waveSpeed: 0.02,
+                    outlineOffset: 0.005,
+                    outlineThicknessReduction: 3,
+                    mainThickness: 30,
+                    waveStyle: 'smooth',
+                    frames: 100, // Total frames, not lines
+                };
+                break;
+            case 'Magma':
+                config = {
+                    baseFillColor: '#660000',
+                    waveColors: ['#FF2400', '#CC5500'],
+                    outlineColor: '#282828',
+                    particleColor: '#FFA500',
+                    particleType: 'ember',
+                    particleChance: 0.2,
+                    particleSizeMin: 0.008,
+                    particleSizeMax: 0.02,
+                    particleThickness: 4,
+                    startHeight: 0.86,
+                    waveAmplitude: 0.04,
+                    waveFrequency: 2,
+                    waveSpeed: 0.01,
+                    outlineOffset: 0.01,
+                    outlineThicknessReduction: 1,
+                    mainThickness: 28,
+                    waveStyle: 'jagged',
+                    frames: 100,
+                };
+                break;
+            case 'Poison':
+                config = {
+                    baseFillColor: '#556B2F',
+                    waveColors: ['#6B8E23', '#808000'],
+                    outlineColor: '#ADFF2F',
+                    particleColor: '#7FFF00',
+                    particleType: 'blob',
+                    particleChance: 0.25,
+                    particleSizeMin: 0.015,
+                    particleSizeMax: 0.035,
+                    particleThickness: 10,
+                    startHeight: 0.87,
+                    waveAmplitude: 0.055,
+                    waveFrequency: 1.8,
+                    waveSpeed: 0.018,
+                    outlineOffset: 0.006,
+                    outlineThicknessReduction: 2,
+                    mainThickness: 26,
+                    waveStyle: 'gloopy',
+                    frames: 100,
+                };
+                break;
+            case 'PurpleGoo':
+                config = {
+                    baseFillColor: '#4B0082',
+                    waveColors: ['#800080', '#9932CC'],
+                    outlineColor: '#FF00FF',
+                    particleColor: '#DA70D6',
+                    particleType: 'blob',
+                    particleChance: 0.2,
+                    particleSizeMin: 0.01,
+                    particleSizeMax: 0.03,
+                    particleThickness: 9,
+                    startHeight: 0.88,
+                    waveAmplitude: 0.05,
+                    waveFrequency: 2.2,
+                    waveSpeed: 0.022,
+                    outlineOffset: 0.007,
+                    outlineThicknessReduction: 2,
+                    mainThickness: 27,
+                    waveStyle: 'jagged',
+                    frames: 100,
+                };
+                break;
+            default:
+                this._stopDrawing();
+                console.warn(`Unknown animation type: ${type}`);
+                return;
+        }
+
+        // Apply User Settings from UI
+        const userFrameDelay = parseInt(this._ui.animationSpeedInput.value); // ms per frame
+        const userSegments = parseInt(this._ui.animationSegmentsInput.value); // number of wave segments
+        const userParticleChance = parseFloat(this._ui.animationParticleChanceInput.value) / 100; // % chance to 0-1
+        // Clamp fill density input to a reasonable range (0.005 to 0.1 for fillStep_norm)
+        const userFillDensityInputVal = parseInt(this._ui.animationFillDensityInput.value);
+        config.fillStep_norm = Math.max(0.005, Math.min(0.1, userFillDensityInputVal / 1000)); // Divide user input by 1000
+
+        const addRandomDelay = this._ui.animationRandomDelayToggle.checked;
+
+        // Clamp segments to a reasonable range for performance and visual quality
+        config.segments = Math.max(10, Math.min(50, userSegments));
+        config.particleChance = Math.max(0, Math.min(1, userParticleChance));
+
+
+        // --- Clear the canvas before drawing new animation ---
+        await this._clearCanvas();
+        if (!this._drawingActive) { return; } // Check if clear stopped the drawing
+
+        // --- Draw Solid Base Fill ---
+        // Fill the entire canvas from bottom to top until startHeight
+        const fillThicknessPerLine = 15; // Thicker lines for faster fill
+        let fillY = 0.99; // Start near bottom
+        const targetFillY = config.startHeight + config.waveAmplitude; // Fill up to below the wave crests
+
+        while (fillY > targetFillY && this._drawingActive) {
+            // Draw a full-width horizontal line
+            // Use isEraser: false because we are coloring, not erasing
+            if (!this._sendAndRenderDrawCmd([0, fillY], [1, fillY], config.baseFillColor, fillThicknessPerLine, false)) {
+                this._stopDrawing();
+                console.error("Failed to draw base fill segment.");
+                break;
+            }
+            fillY -= config.fillStep_norm; // Move upwards by fill density
+            await this._delay(10); // Small delay to avoid spamming
+        }
+        if (!this._drawingActive) { console.log("Animation stopped during base fill."); return; }
+        await this._delay(50); // Pause after base fill is done
+
+        // --- Animate Waves ---
+        for (let frame = 0; frame < config.frames && this._drawingActive; frame++) {
+            let wavePoints_norm = [];
+            for (let i = 0; i <= config.segments; i++) { // Use configurable segments
+                const x_norm = i / config.segments;
+                let yOffset_norm = Math.sin((x_norm * config.waveFrequency * Math.PI) + (frame * config.waveSpeed)) * config.waveAmplitude;
+
+                if (config.waveStyle === 'gloopy') {
+                    yOffset_norm += (Math.sin((x_norm * config.waveFrequency * 1.7 * Math.PI) + (frame * config.waveSpeed * 1.3) + 0.5) * config.waveAmplitude * 0.4) * Math.sin(x_norm * Math.PI);
+                } else if (config.waveStyle === 'jagged') {
+                    yOffset_norm += (this._getRandomFloat(-0.5, 0.5)) * config.waveAmplitude * 0.3;
+                }
+                const y_norm = config.startHeight - yOffset_norm;
+                wavePoints_norm.push([x_norm, y_norm]);
+            }
+
+            for (let i = 0; i < wavePoints_norm.length - 1 && this._drawingActive; i++) {
+                const p1_norm = wavePoints_norm[i];
+                const p2_norm = wavePoints_norm[i + 1];
+                const waveColor = config.waveColors[i % config.waveColors.length];
+
+                // Draw wave main body (not eraser mode)
+                if (!this._sendAndRenderDrawCmd(p1_norm, p2_norm, waveColor, config.mainThickness, false)) {
+                    this._stopDrawing(); break;
+                }
+
+                // Draw wave outline (not eraser mode)
+                const p1_outline_norm = [p1_norm[0], p1_norm[1] - config.outlineOffset];
+                const p2_outline_norm = [p2_norm[0], p2_norm[1] - config.outlineOffset];
+                const outlineThickness = Math.max(1, config.mainThickness - config.outlineThicknessReduction);
+                if (!this._sendAndRenderDrawCmd(p1_outline_norm, p2_outline_norm, config.outlineColor, outlineThickness, false)) {
+                    this._stopDrawing(); break;
+                }
+
+                // Draw particles (not eraser mode)
+                if (Math.random() < config.particleChance) {
+                    const particleX_norm = this._getRandomFloat(Math.min(p1_norm[0], p2_norm[0]), Math.max(p1_norm[0], p2_norm[0]));
+                    const particleY_norm = Math.min(p1_norm[1], p2_norm[1]) - this._getRandomFloat(0.01, 0.08);
+                    const particleSize_norm = this._getRandomFloat(config.particleSizeMin, config.particleSizeMax);
+
+                    const particleFinalThickness = Math.max(1, config.particleThickness * particleSize_norm / config.particleSizeMin);
+                    if (!this._sendAndRenderDrawCmd([particleX_norm, particleY_norm], [particleX_norm + 0.001, particleY_norm + 0.001], config.particleColor, particleFinalThickness, false)) {
+                        this._stopDrawing(); break;
+                    }
+                }
+                if (!this._drawingActive) break;
+            }
+            if (!this._drawingActive) break;
+
+            // Apply delay per frame
+            let currentFrameDelay = userFrameDelay;
+            if (addRandomDelay) {
+                currentFrameDelay += this._getRandomInt(0, 50);
+            }
+            if (currentFrameDelay > 0) await this._delay(currentFrameDelay);
+        }
+
+        this._stopDrawing();
+        console.log(`${type} Animation finished.`);
+    }
+}
