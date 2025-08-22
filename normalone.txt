@@ -1,0 +1,1244 @@
+// START Player Sentinel (Versión Final Definitiva para Control del Jugador Local)
+// Este módulo DEBE ser pegado directamente en el ámbito de la función autoejecutable principal de tu Cube Engine,
+// y DEBE colocarse ANTES de la definición de la clase 'DrawariaTools'.
+
+// Helper para obtener el WebSocket principal del juego
+// REVISADO: Se enfoca en window._io.socket, que es la forma más común en Drawaria
+// de acceder al socket de juego principal para enviar comandos.
+function getGameSocket() {
+    if (window._io && window._io.socket && window._io.socket.readyState === WebSocket.OPEN) {
+        return window._io.socket;
+    }
+    // Fallback menos directo, pero a veces globalThis.sockets[0] puede ser el bueno si _io.socket no es el primario.
+    if (globalThis.sockets && globalThis.sockets.length > 0) {
+        const primarySocket = globalThis.sockets.find(s =>
+            s.url.includes("drawaria.online/socket.io") && s.readyState === WebSocket.OPEN
+        );
+        if (primarySocket) {
+            return primarySocket;
+        }
+    }
+    return null;
+}
+
+// Helper para crear un toggle switch con etiqueta.
+// ESTA FUNCIÓN ESTÁ DEFINIDA AQUÍ PARA ASEGURAR QUE ESTÉ EN EL ÁMBITO CORRECTO
+// ANTES DE LA DECLARACIÓN DE PlayerSentinelTool.
+function createToggleForPlayerSentinel(labelText, callback, initialChecked = false) {
+    const row = domMake.Row();
+    row.style.alignItems = 'center';
+    row.style.justifyContent = 'space-between';
+
+    const labelSpan = domMake.Tree("span", {}, [labelText]);
+
+    const checkboxId = "player-sentinel-toggle-" + (Math.random() * 1e9 | 0);
+    const checkbox = domMake.Tree("input", { type: "checkbox", id: checkboxId, hidden: true });
+    if (initialChecked) {
+        checkbox.checked = true;
+    }
+
+    const indicatorLabel = domMake.Tree("label", {
+        for: checkboxId,
+        class: "icon",
+        style: `
+            width: 24px;
+            height: 24px;
+            min-width: unset;
+            min-height: unset;
+            border: 1px solid var(--CE-color);
+            border-radius: .25rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: background-color 0.2s ease, border-color 0.2s ease;
+            background-color: ${initialChecked ? 'var(--info)' : 'var(--secondary)'};
+        `
+    });
+
+    indicatorLabel.innerHTML = initialChecked
+        ? '<i class="fas fa-check-square" style="font-size: 1.2em; color: var(--success);"></i>'
+        : '<i class="fas fa-square" style="font-size: 1.2em;"></i>';
+
+    checkbox.addEventListener('change', (event) => {
+        const checked = event.target.checked;
+        if (checked) {
+            indicatorLabel.innerHTML = '<i class="fas fa-check-square" style="font-size: 1.2em; color: var(--success);"></i>';
+            indicatorLabel.style.backgroundColor = 'var(--info)';
+        } else {
+            indicatorLabel.innerHTML = '<i class="fas fa-square" style="font-size: 1.2em;"></i>';
+            indicatorLabel.style.backgroundColor = 'var(--secondary)';
+        }
+        if (callback && typeof callback === 'function') {
+            callback(checked);
+        }
+    });
+
+    row.append(labelSpan, domMake.Tree("div", {style: "flex-shrink: 0;"}, [checkbox, indicatorLabel]));
+    return row;
+}
+
+// Bloque de estilos: Este sí debe estar dentro del 'if' para asegurar que QBit.Styles existe
+if (typeof QBit !== 'undefined' && QBit.Styles) {
+    QBit.Styles.addRules([
+        `#${QBit.identifier} .module-section {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            padding: 5px;
+            border: 1px solid var(--CE-color);
+            border-radius: .25rem;
+            background-color: var(--CE-bg_color);
+            margin-bottom: 10px;
+        }`,
+        `#${QBit.identifier} .module-section-title {
+            font-weight: bold;
+            margin-bottom: 5px;
+            color: var(--dark-blue-title);
+            text-align: center;
+        }`,
+        `#${QBit.identifier} .module-status-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 5px;
+            vertical-align: middle;
+        }`,
+        `#${QBit.identifier} .module-status-connected {
+            background-color: var(--success);
+        }`,
+        `#${QBit.identifier} .module-status-disconnected {
+            background-color: var(--danger);
+        }`,
+        `#${QBit.identifier} .artfx-button-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+            gap: 8px;
+            margin-top: 10px;
+        }`,
+        `#${QBit.identifier} .artfx-button {
+            padding: 8px 10px;
+            background-color: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            text-align: center;
+            font-size: 0.85em;
+            transition: background-color 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 5px;
+        }`,
+        `#${QBit.identifier} .artfx-button:hover {
+            background-color: var(--dark-primary);
+        }`,
+        `#${QBit.identifier} .artfx-button.special {
+            background-color: var(--info);
+        }`,
+        `#${QBit.identifier} .artfx-button.special:hover {
+            background-color: var(--dark-info);
+        }`,
+        `#${QBit.identifier} .artfx-button.active {
+            background-color: var(--success); /* O otro color distinto de activo */
+        }`,
+        `#${QBit.identifier} .artfx-button.active i {
+            color: white; /* Asegura que el color del icono sea visible en estado activo */
+        }`,
+        `#${QBit.identifier} .sentinel-control-group { /* Re-used from original BotSentinel for clarity */
+            display: flex;
+            gap: 10px;
+            margin-top: 8px;
+            align-items: center;
+        }`,
+        `#${QBit.identifier} .sentinel-control-group > select,
+         #${QBit.identifier} .sentinel-control-group > input[type="number"],
+         #${QBit.identifier} .sentinel-control-group > button {
+            flex-grow: 1;
+            padding: 5px;
+            box-sizing: border-box;
+            border: 1px solid var(--CE-color);
+            border-radius: .25rem;
+            background-color: var(--CE-bg_color);
+            color: var(--CE-color);
+        }`,
+        `#${QBit.identifier} .sentinel-control-group label {
+             flex-shrink: 0;
+             margin-right: 5px;
+        }`,
+        `#${QBit.identifier} .sentinel-follow-button.active {
+             background-color: var(--warning);
+             color: white;
+        }`,
+        `#${QBit.identifier} .bad-girl-section-title {
+            color: var(--danger);
+        }`,
+        `#${QBit.identifier} .bad-girl-toggle-button.active {
+            background-color: var(--danger);
+            color: white;
+        }`,
+        `#${QBit.identifier} .bad-girl-textarea {
+            width: 100%;
+            min-height: 80px;
+            margin-top: 5px;
+            background-color: var(--input-bg);
+            color: var(--dark-text);
+            border: 1px solid var(--input-border-blue);
+            padding: 5px;
+            box-sizing: border-box;
+        }`,
+         `#${QBit.identifier} .bad-girl-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            margin-top: 5px;
+        }`,
+        `#${QBit.identifier} .bad-girl-controls label {
+             margin-right: 5px;
+        }`
+    ]);
+} else {
+    console.error("QBit o QBit.Styles no está definido. Los estilos de Player Sentinel pueden no cargarse.");
+}
+
+
+// START PLAYER SENTINEL
+
+// Declaración de la clase PlayerSentinelTool.
+// Esta clase DEBE estar declarada en el ámbito de la función principal (IIFE)
+// para que DrawariaTools.loadExtension() pueda verla y usarla.
+class PlayerSentinelTool extends QBit {
+    // Nota: No se usan static dummy1 ni static dummy2 aquí.
+    // Este módulo se carga directamente con DrawariaTools.loadExtension(PlayerSentinelTool);
+    // DrawariaTools se encargará de instanciarlo como un hijo.
+
+    #fastDelayActive = {
+        naturalMovement: false,
+        followPlayer: false
+    };
+
+
+    // Propiedades privadas para la gestión de intervalos de animación.
+    #bugExperienceInterval = null;
+    #playerChaosInterval = null;
+    #glitchVisualInterval = null;
+
+    // Propiedades para el movimiento avanzado e interacción inteligente
+    #naturalMovementInterval = null;
+    #followTarget = { id: null, interval: null, name: null };
+    #activeToggles = {
+        naturalMovement: false,
+        reactiveChat: false,
+        smartGestures: false,
+        badGirlSpam: false
+    };
+    #chatCooldown = new Map(); // Cooldown para mensajes de chat (propio jugador)
+    #gestureCooldown = new Map(); // Cooldown para gestos (propio jugador)
+
+    // Referencias a elementos de la UI
+    #ui = {};
+
+    // Propiedades para el modo 'Chica Mala'
+    #spamInterval = null;
+    #intervalTime = 700;
+    #messageList = [
+        "Eres muy lento", "Novato", "Jaja, qué mal", "Inténtalo de nuevo",
+        "¿Eso es todo lo que tienes?", "Aburrido...", "Me duermo", "Puedes hacerlo mejor",
+        "...", "Casi, pero no"
+    ];
+
+    // Datos de personalidad para respuestas (copiado de Bot Sentinel)
+    #personalities = {
+        Amigable: {
+            spanish_greetings: ["¡Hola a todos!", "¡Buenas!", "¿Qué tal?", "Hey! Un gusto estar aquí 😊"],
+            spanish_acknowledgements: ["Si!", "Claro!", "Entendido!", "Asi es!"],
+            spanish_questions: ["Como estás?", "Y tu?", "¿Que tal?"],
+            spanish_laughter: ["XD", "Jaja", "LOL"],
+            spanish_general: ["Que?", "Bueno...", "Pero..."],
+            spanish_congrats: ["¡Bien hecho!", "¡Excelente!", "¡Esa era!", "Felicidades!"],
+            spanish_farewell: ["¡Adiós!", "Nos vemos", "¡Hasta la próxima!", "Chao 👋"],
+            spanish_playerJoin: ["¡Bienvenido, {player}!", "Hola {player}!", "Mira quién llegó, {player} 👋"],
+            spanish_playerLeave: ["Adiós, {player}!", "{player} se fue 😔", "Chao {player}"],
+
+            english_greetings: ["Hi!", "Hello!", "Hey there!", "Nice to see you 😊"],
+            english_acknowledgements: ["Yes!", "Got it!", "Right!"],
+            english_questions: ["How are you?", "And you?", "What's up?"],
+            english_laughter: ["LOL", "Haha", "XD", "Omg!"],
+            english_general: ["What?", "Well...", "But..."],
+            english_congrats: ["Good job!", "Excellent!", "That was it!", "Congrats!"],
+            english_farewell: ["Bye!", "See ya!", "Later!", "So long 👋"],
+            english_playerJoin: ["Welcome, {player}!", "Hi {player}!", "Look who's here, {player} 👋"],
+            english_playerLeave: ["Bye, {player}!", "{player} left 😔", "See ya {player}"],
+
+            gestures: {
+                greeting: 5,
+                acknowledgement: 11,
+                question: 10,
+                laughter: 7,
+                general: 17,
+                congrats: 19,
+                playerJoin: 5,
+                playerLeave: 3,
+                drawing: 4,
+                goodjob_drawing: 0
+            }
+        },
+        Competitivo: {
+            spanish_greetings: ["He llegado.", "Prepárense para dibujar.", "A ver quién gana."],
+            spanish_acknowledgements: ["Si.", "Ok.", "Correcto."],
+            spanish_questions: ["¿Estás listo?", "Quién sigue?", "¿Qué dibujas?"],
+            spanish_laughter: ["Jaja.", "Easy."],
+            spanish_general: ["..."],
+            spanish_congrats: ["Nada mal.", "Correcto.", "Uno menos.", "Ok, adivinaste."],
+            spanish_farewell: ["Me retiro.", "Suficiente por hoy.", "GG."],
+            spanish_playerJoin: ["Otro rival...", "Llegó {player}...", "Hola {player}."],
+            spanish_playerLeave: ["Uno menos.", "{player} se fue.", "OK, {player}."],
+
+            english_greetings: ["I'm here.", "Get ready to draw.", "Who's next?"],
+            english_acknowledgements: ["Yes.", "Ok.", "Correct."],
+            english_questions: ["You ready?", "Who's drawing?", "What is it?"],
+            english_laughter: ["Haha.", "Easy."],
+            english_general: ["..."],
+            english_congrats: ["Not bad.", "Correct.", "One less.", "Okay, you got it."],
+            english_farewell: ["I'm out.", "Enough for today.", "GG."],
+            english_playerJoin: ["Another rival...", "{player} arrived...", "Hi {player}."],
+            english_playerLeave: ["One less.", "{player} left.", "Okay {player}."],
+
+            gestures: {
+                greeting: 1,
+                acknowledgement: 12,
+                question: 10,
+                laughter: 6,
+                general: 16,
+                congrats: 0,
+                playerJoin: 13,
+                playerLeave: 3,
+                drawing: 12,
+                goodjob_drawing: 0
+            }
+        },
+        Neutral: {
+            spanish_greetings: ["Hola.", "Saludos."],
+            spanish_acknowledgements: ["Si.", "Ok."],
+            spanish_questions: ["?", "Cómo?"],
+            spanish_laughter: ["Jeje."],
+            spanish_general: ["..."],
+            spanish_congrats: ["Bien.", "Correcto."],
+            spanish_farewell: ["Adiós."],
+            spanish_playerJoin: ["{player} se unió."],
+            spanish_playerLeave: ["{player} se fue."],
+
+            english_greetings: ["Hi.", "Greetings."],
+            english_acknowledgements: ["Yes.", "Ok."],
+            english_questions: ["?", "How?"],
+            english_laughter: ["Hehe."],
+            english_general: ["..."],
+            english_congrats: ["Good.", "Correct."],
+            english_farewell: ["Bye."],
+            english_playerJoin: ["{player} joined."],
+            english_playerLeave: ["{player} left."],
+
+            gestures: {
+                greeting: 11,
+                acknowledgement: 11,
+                question: 10,
+                laughter: 5,
+                general: 17,
+                congrats: 11,
+                playerJoin: 11,
+                playerLeave: 11,
+                drawing: 8,
+                goodjob_drawing: 11
+            }
+        }
+    };
+    #currentPersonality = "Amigable"; // Personalidad seleccionada por defecto.
+
+
+    // Constructor del módulo PlayerSentinelTool.
+    constructor() {
+        // Llama al constructor de la clase padre QBit con el nombre y el icono del módulo.
+        super("Player Sentinel", '<i class="fas fa-user-shield"></i>');
+        // Realiza los pasos iniciales de configuración.
+        this.#onStartup();
+    }
+
+    // Método asíncrono de inicio para inicializar el módulo.
+    #onStartup() {
+        // Carga la interfaz de usuario para el módulo.
+        this.#loadInterface();
+        // Carga los mensajes por defecto para el modo "Chica Mala".
+        this.#ui.messageTextarea.value = this.#messageList.join("\n");
+        this.#ui.intervalInput.value = this.#intervalTime;
+
+        // Inicia el monitoreo de la lista de jugadores para actualizar el dropdown de "Seguir".
+        const playerListElement = document.getElementById("playerlist");
+        if (playerListElement) {
+            new MutationObserver(() => this.#updatePlayerDropdown()).observe(playerListElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-playerid', 'data-loggedin', 'style'] });
+            this.#updatePlayerDropdown(); // Llamada inicial
+        }
+
+        // Inicia el monitoreo del chat para interacción inteligente.
+        const chatboxMessages = document.getElementById("chatbox_messages");
+        if (chatboxMessages) {
+            new MutationObserver((mutations) => {
+                mutations.forEach(record => record.addedNodes.forEach(node => {
+                    if (node.nodeType === 1 && node.classList.contains('chatmessage')) {
+                        this.#handleReactiveChat(node);
+                    }
+                }));
+            }).observe(chatboxMessages, { childList: true, subtree: false });
+        }
+
+        // Hook a los eventos de juego para reacciones inteligentes
+        if (window._io && window._io.events) {
+            const originalTurnWordGuessed = window._io.events.uc_turn_wordguessedlocalThis;
+            window._io.events.uc_turn_wordguessedlocalThis = (...args) => {
+                this.#handleCorrectGuess(args);
+                if (originalTurnWordGuessed) originalTurnWordGuessed(...args);
+            };
+
+            const originalPlayerNew = window._io.events.bc_playernew;
+            window._io.events.bc_playernew = (...args) => {
+                this.#handlePlayerJoin(args);
+                if (originalPlayerNew) originalPlayerNew(...args);
+            };
+
+            const originalPlayerLeft = window._io.events.bc_playerleft;
+            window._io.events.bc_playerleft = (...args) => {
+                this.#handlePlayerLeave(args);
+                if (originalPlayerLeft) originalPlayerLeft(...args);
+            };
+
+            const originalTurnBeginDraw = window._io.events.uc_turn_begindraw;
+            window._io.events.uc_turn_begindraw = (...args) => {
+                this.#handleTurnBeginDraw(args);
+                if (originalTurnBeginDraw) originalTurnBeginDraw(...args);
+            };
+
+            const originalTurnSelectWord = window._io.events.uc_turn_selectword;
+            window._io.events.uc_turn_selectword = (...args) => {
+                this.#handleWordSelected(args);
+                if (originalTurnSelectWord) originalTurnSelectWord(...args);
+            };
+        }
+
+
+        // Actualiza periódicamente el estado de conexión que se muestra en la UI.
+        setInterval(() => this.#updateConnectionStatus(), 1000);
+        // Notifica al usuario que el módulo se ha cargado.
+        // this.notify("info", "Módulo 'Player Sentinel' cargado. ¡Controla tu propia locura!");
+    }
+
+    // Construye la interfaz de usuario del módulo.
+    #loadInterface() {
+        // Crea un contenedor principal para la interfaz de usuario del módulo, estilizado como una sección de Cube Engine.
+        const container = domMake.Tree("div", { id: `${this.identifier}-container`, class: "module-section" });
+        // Añade este contenedor al elemento de sección propio del módulo QBit.
+        this.htmlElements.section.appendChild(container);
+
+        // Añade una sección para mostrar el estado de la conexión WebSocket.
+        container.appendChild(domMake.Tree("div", { class: "module-section-title" }, ["Estado de Conexión"]));
+        const connectionStatusDiv = domMake.Tree("div", {}, [
+            // Indicador de estado (círculo) que cambia de color según la conexión.
+            domMake.Tree("span", { id: `${this.identifier}-connectionStatus`, class: `module-status-indicator module-status-disconnected` }),
+            // Texto que indica el estado actual de la conexión.
+            domMake.Tree("span", { id: `${this.identifier}-statusText` }, ["Desconectado"])
+        ]);
+        container.appendChild(connectionStatusDiv);
+
+        // --- Sección: Movimiento Avanzado ---
+        const movementSection = domMake.Tree("div", { class: "module-section" });
+        movementSection.appendChild(domMake.Tree("div", { class: "module-section-title" }, ["Movimiento Avanzado"]));
+
+        // Toggle para Movimiento Natural con opción de Fast Delay
+        const naturalMovementToggleRow = domMake.Tree("div", { class: "sentinel-control-row" });
+        const naturalMovementToggle = createToggleForPlayerSentinel("Movimiento Natural", (checked) => this.#toggleNaturalMovement(checked));
+        this.#ui.naturalMovementToggleCheckbox = naturalMovementToggle.querySelector('input[type="checkbox"]');
+        naturalMovementToggleRow.appendChild(naturalMovementToggle);
+
+        // Añadir el toggle de Fast Delay para Movimiento Natural
+        const naturalMovementFastDelayToggle = createToggleForPlayerSentinel("Fast Movements", (checked) => {
+            this.#fastDelayActive.naturalMovement = checked;
+            // Si el movimiento natural ya está activo, reinícialo para aplicar el nuevo delay
+            if (this.#activeToggles.naturalMovement) {
+                this.#toggleNaturalMovement(false); // Desactivar
+                this.#toggleNaturalMovement(true);  // Reactivar con el nuevo delay
+            }
+        });
+        this.#ui.naturalMovementFastDelayCheckbox = naturalMovementFastDelayToggle.querySelector('input[type="checkbox"]');
+        naturalMovementFastDelayToggle.classList.add("sentinel-compact-toggle"); // Clase para estilizar si es necesario
+        naturalMovementToggleRow.appendChild(naturalMovementFastDelayToggle);
+        movementSection.appendChild(naturalMovementToggleRow);
+
+
+        const followGroup = domMake.Tree("div", { class: "sentinel-control-group" });
+        this.#ui.playerDropdown = domMake.Tree("select", {style: "flex-grow: 1;"});
+        followGroup.appendChild(this.#ui.playerDropdown);
+
+        this.#ui.followButton = domMake.Button("Seguir");
+        this.#ui.followButton.classList.add("sentinel-follow-button");
+        this.#ui.followButton.addEventListener("click", () => this.#toggleFollowPlayer());
+        followGroup.appendChild(this.#ui.followButton);
+        movementSection.appendChild(followGroup);
+
+        // Añadir el toggle de Fast Delay para Seguimiento de Jugador
+        const followPlayerFastDelayToggle = createToggleForPlayerSentinel("Fast Follow", (checked) => {
+            this.#fastDelayActive.followPlayer = checked;
+            // Si el seguimiento ya está activo, reinícialo para aplicar el nuevo delay
+            if (this.#followTarget.id !== null) {
+                this.#toggleFollowPlayer(); // Detener
+                this.#toggleFollowPlayer(); // Reactivar con el nuevo delay
+            }
+        });
+        this.#ui.followPlayerFastDelayCheckbox = followPlayerFastDelayToggle.querySelector('input[type="checkbox"]');
+        followPlayerFastDelayToggle.classList.add("sentinel-compact-toggle"); // Clase para estilizar si es necesario
+        movementSection.appendChild(followPlayerFastDelayToggle); // Lo ponemos directamente en la sección de movimiento
+
+        container.appendChild(movementSection);
+
+        // --- Sección: Interacción Inteligente ---
+        const interactionSection = domMake.Tree("div", { class: "module-section" });
+        interactionSection.appendChild(domMake.Tree("div", { class: "module-section-title" }, ["Interacción Inteligente"]));
+
+        const reactiveChatToggle = createToggleForPlayerSentinel("Chat Reactivo", (checked) => this.#activeToggles.reactiveChat = checked);
+        this.#ui.reactiveChatToggleCheckbox = reactiveChatToggle.querySelector('input[type="checkbox"]');
+        interactionSection.appendChild(reactiveChatToggle);
+
+        const smartGesturesToggle = createToggleForPlayerSentinel("Gestos Inteligentes", (checked) => this.#activeToggles.smartGestures = checked);
+        this.#ui.smartGesturesToggleCheckbox = smartGesturesToggle.querySelector('input[type="checkbox"]');
+        interactionSection.appendChild(smartGesturesToggle);
+
+        const personalityGroup = domMake.Tree("div", { class: "sentinel-control-group" });
+        personalityGroup.appendChild(domMake.Tree("label", {}, ["Personalidad:"]));
+        this.#ui.personalitySelect = domMake.Tree("select", {style: "flex-grow: 1;"});
+        Object.keys(this.#personalities).forEach(p => {
+            this.#ui.personalitySelect.appendChild(domMake.Tree("option", { value: p }, [p]));
+        });
+        this.#ui.personalitySelect.addEventListener("change", (e) => this.#currentPersonality = e.target.value);
+        personalityGroup.appendChild(this.#ui.personalitySelect);
+        interactionSection.appendChild(personalityGroup);
+        container.appendChild(interactionSection);
+
+        // --- Sección: Modo 'Chica Mala' (Spam) ---
+        const badGirlSection = domMake.Tree("div", { class: "module-section" });
+        badGirlSection.appendChild(domMake.Tree("div", { class: "module-section-title bad-girl-section-title" }, ["Modo 'Chica Mala' (Spam)"]));
+
+        this.#ui.badGirlToggleButton = domMake.Button('<i class="fas fa-play-circle"></i> Iniciar Spam');
+        this.#ui.badGirlToggleButton.classList.add("bad-girl-toggle-button");
+        this.#ui.badGirlToggleButton.addEventListener("click", () => this.#toggleBadGirlSpam());
+        badGirlSection.appendChild(this.#ui.badGirlToggleButton);
+
+        badGirlSection.appendChild(domMake.Tree("label", { style: "margin-top: 10px; display: block;" }, ["Lista de mensajes (uno por línea):"]));
+        this.#ui.messageTextarea = domMake.Tree("textarea", {
+            class: "bad-girl-textarea",
+            placeholder: "Escribe aquí tus mensajes, uno por línea."
+        });
+        badGirlSection.appendChild(this.#ui.messageTextarea);
+
+        const controlsDiv = domMake.Tree("div", { class: "bad-girl-controls" });
+        const intervalLabel = domMake.Tree("label", { for: "bad-girl-interval" }, ["Intervalo (ms):"]);
+        this.#ui.intervalInput = domMake.Tree("input", {
+            type: "number",
+            id: "bad-girl-interval",
+            value: this.#intervalTime,
+            min: "100",
+            step: "50",
+            style: "width: 80px;"
+        });
+        this.#ui.intervalInput.addEventListener("change", (e) => {
+            const newTime = parseInt(e.target.value);
+            if (newTime >= 100) {
+                // this.notify("info", `Intervalo de spam actualizado a ${newTime}ms.`);
+                this.#intervalTime = newTime; // Actualiza el valor después de la notificación
+                if (this.#spamInterval) {
+                    this.#toggleBadGirlSpam(); // Detener y reiniciar con nuevo valor
+                    this.#toggleBadGirlSpam();
+                }
+            }
+        });
+
+        const saveMessagesButton = domMake.Button("Guardar Lista");
+        saveMessagesButton.addEventListener("click", () => this.#updateMessageList());
+        controlsDiv.append(intervalLabel, this.#ui.intervalInput, saveMessagesButton);
+        badGirlSection.appendChild(controlsDiv);
+        container.appendChild(badGirlSection);
+
+
+        // Añade una sección para las "Herramientas de Caos (Player)"
+        container.appendChild(domMake.Tree("div", { class: "module-section-title" }, ["Herramientas de Caos (Player)"]));
+
+        // Helper para crear un botón de alternancia estandarizado
+        const createToggleButtonForChaos = (id, labelText, iconClass, toggleFunction) => {
+            const button = domMake.Button(`<i class="${iconClass}"></i> ${labelText}`);
+            button.id = `${this.identifier}-${id}`;
+            button.classList.add('artfx-button', 'special');
+            button.addEventListener('click', () => toggleFunction.call(this, button));
+            this.#ui[id] = button;
+            return button;
+        };
+
+        const chaosButtonsGrid = domMake.Tree("div", { class: "artfx-button-grid" });
+        chaosButtonsGrid.append(
+            createToggleButtonForChaos('bug-experience', 'Bugear Experiencia', 'fas fa-gamepad', this.#toggleBugExperience),
+            createToggleButtonForChaos('player-chaos', 'Caos de Jugador', 'fas fa-running', this.#togglePlayerChaos),
+            createToggleButtonForChaos('glitch-visual', 'Glitch Visual', 'fas fa-ghost', this.#toggleGlitchVisual)
+        );
+        container.appendChild(chaosButtonsGrid);
+    }
+
+    // Actualiza el estado de conexión mostrado del WebSocket y habilita/deshabilita los botones según corresponda.
+    #updateConnectionStatus() {
+        const socket = getGameSocket();
+        const isConnected = socket && socket.readyState === WebSocket.OPEN;
+
+        const statusIndicator = document.getElementById(`${this.identifier}-connectionStatus`);
+        const statusText = document.getElementById(`${this.identifier}-statusText`);
+
+        if (statusIndicator && statusText) {
+            statusIndicator.className = `module-status-indicator module-status-${isConnected ? 'connected' : 'disconnected'}`;
+            statusText.textContent = isConnected ? "Conectado" : "Desconectado";
+        }
+
+        const buttonsToControl = [
+            this.#ui.naturalMovementToggleCheckbox, this.#ui.naturalMovementFastDelayCheckbox,
+            this.#ui.followButton, this.#ui.followPlayerFastDelayCheckbox,
+            this.#ui.reactiveChatToggleCheckbox, this.#ui.smartGesturesToggleCheckbox,
+            this.#ui.personalitySelect, this.#ui.badGirlToggleButton,
+            this.#ui.messageTextarea, this.#ui.intervalInput, this.#ui.saveMessagesButton,
+            this.#ui['bug-experience'], this.#ui['player-chaos'], this.#ui['glitch-visual']
+        ];
+
+        buttonsToControl.forEach(element => {
+            if (element) element.disabled = !isConnected;
+        });
+
+        // Asegúrate de que los checkboxes y selectores muestren su estado actual si están deshabilitados
+        if (this.#ui.naturalMovementToggleCheckbox) this.#ui.naturalMovementToggleCheckbox.disabled = !isConnected;
+        if (this.#ui.reactiveChatToggleCheckbox) this.#ui.reactiveChatToggleCheckbox.disabled = !isConnected;
+        if (this.#ui.smartGesturesToggleCheckbox) this.#ui.smartGesturesToggleCheckbox.disabled = !isConnected;
+        if (this.#ui.personalitySelect) this.#ui.personalitySelect.disabled = !isConnected;
+    }
+
+    // --- Movimiento Avanzado (para el jugador) ---
+    #toggleNaturalMovement(isActive) {
+        this.#activeToggles.naturalMovement = isActive;
+        if (isActive) {
+            if (this.#followTarget.id !== null) {
+                // this.notify("info", "Movimiento Natural activado. Deteniendo seguimiento.");
+                this.#toggleFollowPlayer(); // Detener seguimiento si se activa el movimiento natural
+            }
+            const socket = getGameSocket();
+            if (!socket) {
+                // this.notify("error", "No conectado. No se puede iniciar el movimiento natural.");
+                this.#ui.naturalMovementToggleCheckbox.checked = false;
+                this.#activeToggles.naturalMovement = false;
+                return;
+            }
+            // this.notify("info", `Movimiento Natural iniciado (${this.#fastDelayActive.naturalMovement ? 'Fast Delay' : 'Normal Delay'}).`);
+            clearInterval(this.#naturalMovementInterval); // Limpiar por si acaso
+            if (this.#fastDelayActive.naturalMovement) {
+                this.#naturalMovementInterval = setInterval(this.#executeNaturalMovement.bind(this), 100 + Math.random() * 100); // Fast Delay
+            } else {
+                this.#naturalMovementInterval = setInterval(this.#executeNaturalMovement.bind(this), 3000 + Math.random() * 2000); // Original Delay
+            }
+            this.#executeNaturalMovement(); // Ejecutar inmediatamente al inicio
+        } else {
+            clearInterval(this.#naturalMovementInterval);
+            this.#naturalMovementInterval = null;
+            // this.notify("info", "Movimiento Natural Desactivado.");
+        }
+    }
+
+    #executeNaturalMovement() {
+        if (!this.#activeToggles.naturalMovement || this.#followTarget.id !== null) return;
+        const socket = getGameSocket();
+        if (!socket || socket.readyState !== WebSocket.OPEN) {
+            // this.notify("warning", "Conexión perdida. Deteniendo movimiento natural.");
+            this.#toggleNaturalMovement(false); // Autodetención
+            return;
+        }
+
+        const centerX = 50;
+        const centerY = 50;
+        const driftAmount = 15;
+
+        let targetX = centerX + (Math.random() - 0.5) * driftAmount;
+        let targetY = centerY + (Math.random() - 0.5) * driftAmount;
+
+        targetX = Math.max(5, Math.min(95, targetX));
+        targetY = Math.max(5, Math.min(95, targetY));
+
+        this.#movePlayerSmoothly(targetX, targetY);
+    }
+
+    #updatePlayerDropdown() {
+        const playerlistElement = document.getElementById("playerlist");
+        if (!playerlistElement || !this.#ui.playerDropdown) return;
+
+        const currentSelection = this.#ui.playerDropdown.value;
+        this.#ui.playerDropdown.innerHTML = ""; // Limpiar opciones existentes
+
+        const myPlayerIdElement = document.querySelector(".playerlist-row[data-self='true']")?.dataset.playerid;
+        const myPlayerId = myPlayerIdElement ? myPlayerIdElement : null;
+
+        const playerRows = playerlistElement.querySelectorAll(".playerlist-row");
+        let humanPlayers = [];
+
+        playerRows.forEach(row => {
+            const playerId = row.dataset.playerid;
+            const playerName = row.querySelector(".playerlist-name a")?.textContent || `Jugador ${playerId}`;
+            if (playerId !== myPlayerId && playerId !== "0") { // Excluirse a sí mismo y a ID 0 (system/bot)
+                humanPlayers.push({ id: playerId, name: playerName });
+            }
+        });
+
+        if (humanPlayers.length === 0) {
+            this.#ui.playerDropdown.appendChild(domMake.Tree("option", { value: "" }, ["No hay jugadores"]));
+            this.#ui.playerDropdown.disabled = true;
+            this.#ui.followButton.disabled = true;
+            this.#toggleFollowPlayer(false); // Detener seguimiento si no hay jugadores
+        } else {
+            this.#ui.playerDropdown.disabled = false;
+            this.#ui.followButton.disabled = false;
+            humanPlayers.forEach(p => {
+                this.#ui.playerDropdown.appendChild(domMake.Tree("option", { value: p.id }, [p.name]));
+            });
+            // Restaurar selección o seleccionar el primero
+            if (humanPlayers.some(p => p.id === currentSelection)) {
+                this.#ui.playerDropdown.value = currentSelection;
+            } else {
+                this.#ui.playerDropdown.selectedIndex = 0;
+            }
+        }
+    }
+
+    #toggleFollowPlayer() {
+        const targetId = this.#ui.playerDropdown.value;
+        const targetName = this.#ui.playerDropdown.querySelector(`option[value="${targetId}"]`)?.textContent;
+
+        const socket = getGameSocket();
+        if (!socket) {
+            // this.notify("error", "No conectado. No se puede seguir a un jugador.");
+            return;
+        }
+
+        if (this.#followTarget.id === targetId) { // Ya está siguiendo, entonces detener
+            clearInterval(this.#followTarget.interval);
+            this.#followTarget = { id: null, interval: null, name: null };
+            this.#ui.followButton.textContent = "Seguir";
+            this.#ui.followButton.classList.remove("active");
+            // this.notify("info", `Dejando de seguir a ${targetName}.`);
+            // Reiniciar movimiento natural si estaba activo
+            if (this.#activeToggles.naturalMovement) {
+                this.#toggleNaturalMovement(true);
+            }
+        } else { // No está siguiendo, entonces iniciar
+            if (!targetId) {
+                // this.notify("warning", "Selecciona un jugador válido de la lista para seguir.");
+                return;
+            }
+            if (this.#naturalMovementInterval) { // Detener movimiento natural si se va a seguir a alguien
+                this.#toggleNaturalMovement(false);
+            }
+            if (this.#followTarget.interval) { // Limpiar cualquier intervalo de seguimiento previo
+                clearInterval(this.#followTarget.interval);
+            }
+
+            this.#followTarget = { id: targetId, name: targetName, interval: null };
+            this.#ui.followButton.textContent = `Siguiendo: ${targetName}`;
+            this.#ui.followButton.classList.add("active");
+            // this.notify("info", `Iniciando seguimiento a ${targetName} (${this.#fastDelayActive.followPlayer ? 'Fast Delay' : 'Normal Delay'}).`);
+
+            if (this.#fastDelayActive.followPlayer) {
+                this.#followTarget.interval = setInterval(this.#followLogic.bind(this), 100); // Fast Delay
+            } else {
+                this.#followTarget.interval = setInterval(this.#followLogic.bind(this), 500); // Original Delay
+            }
+            this.#followLogic(); // Ejecutar inmediatamente
+        }
+    }
+
+    #followLogic() {
+        if (!this.#followTarget.id || !getGameSocket()) {
+            // this.notify("warning", "No hay objetivo o conexión. Deteniendo seguimiento.");
+            this.#toggleFollowPlayer(); // Auto-stop seguimiento
+            return;
+        }
+
+        const targetPlayerElement = document.querySelector(`.spawnedavatar[data-playerid="${this.#followTarget.id}"]`);
+
+        if (!targetPlayerElement) {
+            // this.notify("warning", `Avatar del jugador seguido (${this.#followTarget.name}) no encontrado. Deteniendo seguimiento.`);
+            this.#toggleFollowPlayer(); // Auto-stop seguimiento
+            return;
+        }
+
+        const mainCanvas = document.getElementById('canvas');
+        if (!mainCanvas) return; // Si el canvas no existe, no se puede calcular
+
+        const canvasRect = mainCanvas.getBoundingClientRect();
+        const avatarRect = targetPlayerElement.getBoundingClientRect();
+
+        // Calcular la posición del centro del avatar objetivo en coordenadas normalizadas (0-1) del canvas del juego
+        let targetX_norm = ((avatarRect.left + avatarRect.width / 2 - canvasRect.left) / canvasRect.width);
+        let targetY_norm = ((avatarRect.top + avatarRect.height / 2 - canvasRect.top) / canvasRect.height);
+
+        // Convertir a coordenadas de juego (0-100) para el comando
+        let targetX_game = targetX_norm * 100;
+        let targetY_game = targetY_norm * 100;
+
+        // Añadir un pequeño offset para que el avatar no se superponga perfectamente si es necesario
+        // Por ejemplo, para que tu avatar se posicione un poco a la derecha y abajo
+        const offsetX_game = 5;
+        const offsetY_game = 5;
+
+        let moveX = targetX_game + offsetX_game;
+        let moveY = targetY_game + offsetY_game;
+
+        // Asegurarse de que las coordenadas estén dentro de los límites del canvas (5-95 para un margen)
+        moveX = Math.max(5, Math.min(95, moveX));
+        moveY = Math.max(5, Math.min(95, moveY));
+
+        this.#movePlayerSmoothly(moveX, moveY);
+    }
+
+    #movePlayerSmoothly(targetX, targetY) {
+        // PRIORIDAD: Intentar usar window.game.sendMove() si existe y está disponible
+        // Esto usa la lógica nativa del juego para mover el avatar del jugador
+        if (window.game && typeof window.game.sendMove === "function") {
+            window.game.sendMove(targetX, targetY);
+            // this.notify("log", `Movimiento del jugador ejecutado vía window.game.sendMove a (${targetX}, ${targetY}).`);
+        } else {
+            // Fallback: Si window.game.sendMove no está disponible, intenta con el comando socket directo
+            const socket = getGameSocket();
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+                // this.notify("warning", "Conexión perdida. No se puede mover al jugador.");
+                return;
+            }
+            // El comando moveavatar espera coordenadas 0-100 en un formato especial:
+            // [1e4 * Math.floor((positionX / 100) * 1e4) + Math.floor((positionY / 100) * 1e4), false]
+            socket.send(`42["clientcmd",103,[${1e4 * Math.floor((targetX / 100) * 1e4) + Math.floor((targetY / 100) * 1e4)},false]]`);
+            // this.notify("log", `Movimiento del jugador ejecutado vía socket directo a (${targetX}, ${targetY}).`);
+        }
+
+        // --- NUEVO: Sincroniza visualmente el brushcursor local ---
+        const canvas = document.getElementById('canvas');
+        const brushCursor = document.querySelector('.brushcursor'); // Elemento que representa el cursor local
+        if (canvas && brushCursor) {
+            // Asegurarse que el cursor sea visible (puede estar oculto por el juego)
+            brushCursor.classList.remove('brushcursor-hidden');
+
+            const canvasRect = canvas.getBoundingClientRect();
+            // Calcula la posición en píxeles, relativa a la esquina superior izquierda del canvas visible
+            // (La `brushcursor` se posiciona en relación al canvas, no al documento completo)
+            const xPx = canvasRect.width * (targetX / 100);
+            const yPx = canvasRect.height * (targetY / 100);
+
+            // Ajusta la posición CSS del brushcursor
+            // La brushcursor suele estar centrada, así que restamos la mitad de su tamaño para posicionar la esquina superior izquierda.
+            // Sus dimensiones reales pueden variar, aquí asumimos un tamaño pequeño o se pueden inspeccionar.
+            // Para mayor precisión, podrías hacer: const cursorWidth = brushCursor.offsetWidth; const cursorHeight = brushCursor.offsetHeight;
+            // Y luego: style.left = `${xPx - cursorWidth / 2}px`; style.top = `${yPx - cursorHeight / 2}px`;
+            // Pero un ajuste simple suele funcionar bien si el origen de transformación no es el centro.
+            brushCursor.style.left = `${xPx}px`;
+            brushCursor.style.top = `${yPx}px`;
+        }
+        // --- FIN: Sincronización local ---
+    }
+
+    _delay(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+    // --- Interacción Inteligente (para el jugador) ---
+    #canPlayerChat() {
+        const now = Date.now();
+        const lastChat = this.#chatCooldown.get('player') || 0;
+        // DELAY ORIGINAL PARA CHAT: 2000ms
+        const chatCooldownMs = 2000;
+        const canChat = this.#activeToggles.reactiveChat && (now - lastChat > chatCooldownMs);
+        if (canChat) {
+            this.#chatCooldown.set('player', now);
+        }
+        return canChat;
+    }
+
+    #sendPlayerChat(message) {
+        const socket = getGameSocket();
+        if (socket && socket.readyState === WebSocket.OPEN && this.#canPlayerChat()) {
+            // Usa el input del chat principal del juego para enviar el mensaje
+            const chatInput = document.getElementById('chatbox_textinput');
+            const sendButton = document.getElementById('chatattop-sendbutton');
+            if (chatInput && sendButton) {
+                chatInput.value = message;
+                // Dispara un evento de 'input' para que el juego detecte el cambio de texto
+                chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+                sendButton.click(); // Simula el clic en el botón de enviar
+                // this.notify("log", `Yo: "${message}"`);
+            } else {
+                // this.notify("warning", "No se pudo encontrar el input del chat o el botón de enviar.");
+            }
+        }
+    }
+
+    #canPlayerGesture() {
+        const now = Date.now();
+        const lastGesture = this.#gestureCooldown.get('player') || 0;
+        // DELAY ORIGINAL PARA GESTOS: 500ms
+        const gestureCooldownMs = 500;
+        const canGesture = this.#activeToggles.smartGestures && (now - lastGesture > gestureCooldownMs);
+        if (canGesture) {
+            this.#gestureCooldown.set('player', now);
+        }
+        return canGesture;
+    }
+
+    #sendPlayerGesture(gestureId) {
+        const socket = getGameSocket();
+        if (socket && socket.readyState === WebSocket.OPEN && this.#canPlayerGesture()) {
+            socket.send(`42["sendgesture",${gestureId}]`);
+            // this.notify("log", `Yo usé el gesto ${gestureId}.`);
+        }
+    }
+
+    #getMessageLanguage(message) {
+        const lowerCaseMsg = message.toLowerCase();
+        const spanishKeywords = ['hola', 'qué tal', 'gracias', 'adiós', 'jaja', 'dibujo'];
+        const englishKeywords = ['hi', 'hello', 'thanks', 'bye', 'lol', 'draw'];
+        let spanishMatches = spanishKeywords.filter(k => lowerCaseMsg.includes(k)).length;
+        let englishMatches = englishKeywords.filter(k => lowerCaseMsg.includes(k)).length;
+
+        if (spanishMatches > englishMatches && spanishMatches > 0) return 'spanish';
+        if (englishMatches > spanishMatches && englishMatches > 0) return 'english';
+        return 'neutral';
+    }
+
+    #handleReactiveChat(messageNode) {
+        const playerNameElement = messageNode.querySelector(".playerchatmessage-name a");
+        const playerRow = messageNode.closest(".playerlist-row");
+        const playerId = playerRow ? playerRow.dataset.playerid : null;
+
+        const myPlayerIdElement = document.querySelector(".playerlist-row[data-self='true']")?.dataset.playerid;
+        const myPlayerId = myPlayerIdElement ? myPlayerIdElement : null;
+
+        if (playerId === myPlayerId || playerId === "0") return; // Ignorar mensajes propios o del sistema
+
+        const messageTextElement = messageNode.querySelector(".playerchatmessage-text");
+        if (!messageTextElement || !this.#activeToggles.reactiveChat) return;
+
+        const msg = {
+            id: playerId,
+            name: playerNameElement ? playerNameElement.textContent.trim() : 'Jugador',
+            message: messageTextElement.textContent.trim()
+        };
+
+        const personality = this.#personalities[this.#currentPersonality];
+        const lowerCaseMsg = msg.message.toLowerCase().trim();
+        const lang = this.#getMessageLanguage(msg.message);
+
+        let responseType = null;
+        let responseMessages = null;
+
+        if (/\b(hola|buenas|hey|hi|hello)\b/.test(lowerCaseMsg)) responseType = 'greeting';
+        else if (/\b(si|yes|ok|claro|yeah)\b/.test(lowerCaseMsg)) responseType = 'acknowledgement';
+        else if (/\b(como\sestas|y\stu|how\sare\syou|what's\sup|what)\b/.test(lowerCaseMsg)) responseType = 'question';
+        else if (/\b(xd|lol|jaja|haha|omg)\b/.test(lowerCaseMsg)) responseType = 'laughter';
+        else if (/\b(que|but|well|pero|bueno)\b/.test(lowerCaseMsg)) responseType = 'general';
+        else if (/\b(lindo|hermoso|dibujas\sbien|buen\sdibujo|buen\strabajo|good\sjob|nice\sdraw)\b/.test(lowerCaseMsg)) responseType = 'goodjob_drawing';
+
+        if (responseType) {
+            responseMessages = personality[`${lang}_${responseType}`] || personality[`${lang}_general`] || personality.spanish_general;
+            if (this.#canPlayerChat() && responseMessages && Math.random() < 0.7) {
+                const selectedResponse = responseMessages[Math.floor(Math.random() * responseMessages.length)];
+                this.#sendPlayerChat(selectedResponse.replace("{player}", msg.name));
+            }
+            if (this.#activeToggles.smartGestures && personality.gestures[responseType] !== undefined) {
+                this.#sendPlayerGesture(personality.gestures[responseType]);
+            }
+        }
+    }
+
+    #handleCorrectGuess(data) {
+        // data = [playerId, playerName, guessedWord]
+        const playerId = data[0];
+        const myPlayerIdElement = document.querySelector(".playerlist-row[data-self='true']")?.dataset.playerid;
+        const myPlayerId = myPlayerIdElement ? myPlayerIdElement : null;
+
+        if (playerId === myPlayerId || playerId === "0") return; // Ignorar si yo adiviné o es mensaje del sistema
+
+        if (!this.#activeToggles.reactiveChat && !this.#activeToggles.smartGestures) return;
+
+        const personality = this.#personalities[this.#currentPersonality];
+        const playerName = data[1] || 'alguien';
+
+        if (this.#activeToggles.reactiveChat && Math.random() < 0.7 && this.#canPlayerChat()) {
+            const response = personality.spanish_congrats[Math.floor(Math.random() * personality.spanish_congrats.length)];
+            this.#sendPlayerChat(response.replace("{player}", playerName));
+        }
+        if (this.#activeToggles.smartGestures && personality.gestures.congrats !== undefined && this.#canPlayerGesture()) {
+            this.#sendPlayerGesture(personality.gestures.congrats);
+        }
+    }
+
+    #handlePlayerJoin(data) {
+        // data = [playerId, playerName]
+        const playerId = data[0];
+        const myPlayerIdElement = document.querySelector(".playerlist-row[data-self='true']")?.dataset.playerid;
+        const myPlayerId = myPlayerIdElement ? myPlayerIdElement : null;
+
+        if (playerId === myPlayerId || playerId === "0") return;
+
+        if (!this.#activeToggles.reactiveChat && !this.#activeToggles.smartGestures) return;
+
+        const personality = this.#personalities[this.#currentPersonality];
+        const playerName = data[1] || 'alguien';
+
+        if (this.#activeToggles.reactiveChat && Math.random() < 0.6 && this.#canPlayerChat()) {
+            const response = personality.spanish_playerJoin[Math.floor(Math.random() * personality.spanish_playerJoin.length)];
+            this.#sendPlayerChat(response.replace("{player}", playerName));
+        }
+        if (this.#activeToggles.smartGestures && personality.gestures.playerJoin !== undefined && this.#canPlayerGesture()) {
+            this.#sendPlayerGesture(personality.gestures.playerJoin);
+        }
+    }
+
+    #handlePlayerLeave(data) {
+        // data = [playerId, playerName]
+        const playerId = data[0];
+        const myPlayerIdElement = document.querySelector(".playerlist-row[data-self='true']")?.dataset.playerid;
+        const myPlayerId = myPlayerIdElement ? myPlayerIdElement : null;
+
+        if (playerId === myPlayerId || playerId === "0") return;
+
+        // Si el jugador que se fue era el objetivo de seguimiento, detener el seguimiento
+        if (this.#followTarget.id === playerId) {
+            // this.notify("info", `El jugador seguido (${this.#followTarget.name}) ha abandonado la sala. Deteniendo seguimiento.`);
+            this.#toggleFollowPlayer(); // Esto limpiará el estado de seguimiento
+        }
+
+        if (!this.#activeToggles.reactiveChat && !this.#activeToggles.smartGestures) return;
+
+        const personality = this.#personalities[this.#currentPersonality];
+        const playerName = data[1] || 'alguien';
+
+        if (this.#activeToggles.reactiveChat && Math.random() < 0.5 && this.#canPlayerChat()) {
+            const response = personality.spanish_playerLeave[Math.floor(Math.random() * personality.spanish_playerLeave.length)];
+            this.#sendPlayerChat(response.replace("{player}", playerName));
+        }
+        if (this.#activeToggles.smartGestures && personality.gestures.playerLeave !== undefined && this.#canPlayerGesture()) {
+            this.#sendPlayerGesture(personality.gestures.playerLeave);
+        }
+    }
+
+    #handleTurnBeginDraw(data) {
+        // data = [drawingPlayerId, currentWordPattern]
+        const drawingPlayerId = data[0];
+        const myPlayerIdElement = document.querySelector(".playerlist-row[data-self='true']")?.dataset.playerid;
+        const myPlayerId = myPlayerIdElement ? myPlayerIdElement : null;
+
+        // Si tu jugador es quien dibuja, o si no hay conexión, o los toggles no están activos, no hagas nada
+        if (drawingPlayerId === myPlayerId || (!this.#activeToggles.reactiveChat && !this.#activeToggles.smartGestures)) return;
+
+        const personality = this.#personalities[this.#currentPersonality];
+        // Buscar el nombre del jugador que dibuja en la lista de jugadores
+        const drawingPlayerName = document.querySelector(`.playerlist-row[data-playerid="${drawingPlayerId}"] .playerlist-name a`)?.textContent || 'alguien';
+
+
+        if (this.#activeToggles.smartGestures && personality.gestures.drawing !== undefined && this.#canPlayerGesture()) {
+            this.#sendPlayerGesture(personality.gestures.drawing);
+        }
+        if (this.#activeToggles.reactiveChat && Math.random() < 0.4 && this.#canPlayerChat()) {
+            const chatMessage = `¡Buena suerte, ${drawingPlayerName}!`;
+            this.#sendPlayerChat(chatMessage);
+        }
+    }
+
+    #handleWordSelected(data) {
+        // data = [wordsArray, selectedWord, currentWordPattern]
+        // Se dispara cuando el jugador actual selecciona una palabra.
+
+        // Solo reaccionar si los gestos inteligentes están activados y puedo gesticular
+        if (!this.#activeToggles.smartGestures || !this.#canPlayerGesture()) return;
+
+        const personality = this.#personalities[this.#currentPersonality];
+        if (personality.gestures.acknowledgement !== undefined) {
+            this.#sendPlayerGesture(personality.gestures.acknowledgement);
+        }
+    }
+
+    // --- Modo 'Chica Mala' (Spam) ---
+    #updateMessageList() {
+        const newMessages = this.#ui.messageTextarea.value.split('\n').filter(msg => msg.trim() !== '');
+        if (newMessages.length > 0) {
+            this.#messageList = newMessages;
+            // this.notify("success", `Lista de mensajes actualizada con ${this.#messageList.length} mensajes.`);
+        } else {
+            // this.notify("warning", "La lista de mensajes no puede estar vacía.");
+        }
+    }
+
+    #toggleBadGirlSpam() {
+        this.#activeToggles.badGirlSpam = !this.#activeToggles.badGirlSpam;
+
+        if (this.#spamInterval) {
+            // Detener spam
+            clearInterval(this.#spamInterval);
+            this.#spamInterval = null;
+            this.#ui.badGirlToggleButton.classList.remove("active");
+            this.#ui.badGirlToggleButton.innerHTML = '<i class="fas fa-play-circle"></i> Iniciar Spam';
+            // this.notify("info", "Spam de 'Chica Mala' detenido.");
+        } else {
+            // Iniciar spam
+            const socket = getGameSocket();
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+                // this.notify("error", "No se puede iniciar el spam: no hay conexión de juego activa.");
+                this.#activeToggles.badGirlSpam = false;
+                return;
+            }
+
+            if (this.#messageList.length === 0) {
+                // this.notify("error", "No se puede iniciar el spam: la lista de mensajes está vacía. Rellénala.");
+                this.#activeToggles.badGirlSpam = false;
+                return;
+            }
+
+            this.#ui.badGirlToggleButton.classList.add("active");
+            this.#ui.badGirlToggleButton.innerHTML = '<i class="fas fa-stop-circle"></i> Detener Spam';
+            // this.notify("info", `Iniciando spam cada ${this.#intervalTime}ms.`);
+
+            this.#spamInterval = setInterval(() => {
+                if (!socket || socket.readyState !== WebSocket.OPEN) {
+                    // this.notify("error", "Conexión de juego perdida. Deteniendo el spam.");
+                    this.#toggleBadGirlSpam(); // Autodetención
+                    return;
+                }
+                const randomMessage = this.#messageList[Math.floor(Math.random() * this.#messageList.length)];
+                this.#sendPlayerChat(randomMessage); // Enviar mensaje usando el chat del jugador
+            }, this.#intervalTime); // El intervalo aquí se mantiene al configurado por el usuario
+        }
+    }
+
+    // --- Chaos Tool Implementations (para el jugador) ---
+    // Métodos privados para las herramientas de caos
+    #toggleBugExperience(button) {
+        if (this.#bugExperienceInterval) {
+            clearInterval(this.#bugExperienceInterval);
+            this.#bugExperienceInterval = null;
+            button.classList.remove('active');
+            // this.notify("info", "Deteniendo 'Bugear Experiencia'.");
+        } else {
+            const socket = getGameSocket();
+            if (!socket) {
+                // this.notify("error", "No conectado a Drawaria. No se puede iniciar el caos.");
+                return;
+            }
+            button.classList.add('active');
+            // this.notify("info", "Iniciando 'Bugear Experiencia' (AFK y Gestos aleatorios)...");
+
+            // DELAY ORIGINAL: 100ms
+            this.#bugExperienceInterval = setInterval(() => {
+                if (!socket || socket.readyState !== WebSocket.OPEN) {
+                    // this.notify("warning", "Conexión perdida, deteniendo 'Bugear Experiencia'.");
+                    this.#toggleBugExperience(button);
+                    return;
+                }
+                const x = Math.random() * 100;
+                const y = Math.random() * 100;
+                this.#movePlayerSmoothly(x, y); // Mueve el jugador y brushcursor local
+                socket.send(`42["sendgesture",${Math.floor(Math.random() * 32)}]`); // Envía gesto
+            }, 100);
+        }
+    }
+
+    #togglePlayerChaos(button) {
+        if (this.#playerChaosInterval) {
+            clearInterval(this.#playerChaosInterval);
+            this.#playerChaosInterval = null;
+            button.classList.remove('active');
+            // this.notify("info", "Deteniendo 'Caos de Jugador'.");
+        } else {
+            const socket = getGameSocket();
+            if (!socket) {
+                // this.notify("error", "No conectado a Drawaria. No se puede iniciar el caos.");
+                return;
+            }
+            button.classList.add('active');
+            // this.notify("info", "Iniciando 'Caos de Jugador' (AFK, Gestos y Estados aleatorios)...");
+
+            // DELAY ORIGINAL: 100ms
+            this.#playerChaosInterval = setInterval(() => {
+                if (!socket || socket.readyState !== WebSocket.OPEN) {
+                    // this.notify("warning", "Conexión perdida, deteniendo 'Caos de Jugador'.");
+                    this.#togglePlayerChaos(button);
+                    return;
+                }
+                const x = Math.random() * 100;
+                const y = Math.random() * 100;
+                this.#movePlayerSmoothly(x, y); // Mueve el jugador y brushcursor local
+                socket.send(`42["sendgesture",${Math.floor(Math.random() * 32)}]`); // Envía gesto
+                socket.send(`42["playerafk"]`); // Alterna estado AFK
+                socket.send(`42["clientcmd",3,[${Math.floor(Math.random() * 5)},${Math.random() < 0.5}]]`); // Establece bandera de estado aleatoria
+            }, 100);
+        }
+    }
+
+    #toggleGlitchVisual(button) {
+        if (this.#glitchVisualInterval) {
+            clearInterval(this.#glitchVisualInterval);
+            this.#glitchVisualInterval = null;
+            button.classList.remove('active');
+            // this.notify("info", "Deteniendo 'Glitch Visual'.");
+        } else {
+            const socket = getGameSocket();
+            if (!socket) {
+                // this.notify("error", "No conectado a Drawaria. No se puede iniciar el glitch.");
+                return;
+            }
+            button.classList.add('active');
+            // this.notify("info", "Iniciando 'Glitch Visual' (Spam Visual, Votos, Tokens). Con delay.");
+
+            const chatMessages = ["!! GLITCH DETECTED !!", "ERROR CODE 404: REALITY NOT FOUND", "SYSTEM OVERLOAD", "// VISUAL ANOMALY //", "PACKET CORRUPTION", "DISCONNECTING...", "RECALIBRATING... X_X"];
+
+            // DELAY ORIGINAL para el ciclo general: 200ms
+            this.#glitchVisualInterval = setInterval(async () => {
+                if (!socket || socket.readyState !== WebSocket.OPEN) {
+                    // this.notify("warning", "Conexión perdida, deteniendo 'Glitch Visual'.");
+                    this.#toggleGlitchVisual(button);
+                    return;
+                }
+
+                // Spam de propiedades de avatar y chat
+                socket.send(`42["clientcmd",101]`); // spawnavatar (alterna la visibilidad/existencia del avatar)
+                await this._delay(50); // Delay entre acciones dentro del ciclo (ORIGINAL)
+                socket.send(`42["clientcmd",115]`); // setavatarprop (alterna el estado redondeado del avatar)
+                await this._delay(50); // Delay entre acciones dentro del ciclo (ORIGINAL)
+                this.#sendPlayerChat(chatMessages[Math.floor(Math.random() * chatMessages.length)]); // Envía mensaje de chat
+                await this._delay(50); // Delay entre acciones dentro del ciclo (ORIGINAL)
+
+                // Intenta interactuar con otros jugadores en la sala.
+                const playerlistElement = document.getElementById('playerlist');
+                if (playerlistElement) {
+                    const playerRows = playerlistElement.querySelectorAll('.playerlist-row');
+                    const myIdElement = document.querySelector(".playerlist-row[data-self='true']")?.dataset.playerid;
+                    const myPlayerId = myIdElement ? myIdElement : null;
+                    const otherPlayerIds = Array.from(playerRows)
+                        .map(row => row.dataset.playerid)
+                        .filter(id => id && id !== myPlayerId && id !== "0"); // Filtrar el propio ID y el ID 0
+
+                    if (otherPlayerIds.length > 0) {
+                        const randomTargetId = otherPlayerIds[Math.floor(Math.random() * otherPlayerIds.length)];
+                        socket.send(`42["sendvotekick",${randomTargetId}]`); // Votar para expulsar a un jugador aleatorio
+                        await this._delay(50); // Delay entre acciones dentro del ciclo (ORIGINAL)
+                        socket.send(`42["clientcmd",2,[${randomTargetId},${Math.floor(Math.random() * 9)}]]`); // Dar token aleatorio
+                        await this._delay(50); // Delay entre acciones dentro del ciclo (ORIGINAL)
+                    }
+                }
+
+                socket.send(`42["sendvote"]`); // Enviar voto genérico
+                await this._delay(50); // Delay entre acciones dentro del ciclo (ORIGINAL)
+
+            }, 200); // Intervalo general para este efecto (ORIGINAL)
+        }
+    }
+}
